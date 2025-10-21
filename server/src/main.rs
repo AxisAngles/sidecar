@@ -24,20 +24,20 @@ async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
 		.position(|c|*c==b'\n')
 		.ok_or(Error::NoNewlineToSeparatePath)?;
 
-	let path = &body[0 .. path_position];
+	let relative_path = &body[0 .. path_position];
 	let code = &body[path_position + 1 ..];
 
-	let path_str=str::from_utf8(path).map_err(|_|Error::InvalidPath)?;
+	let relative_path_str=str::from_utf8(relative_path).map_err(|_|Error::InvalidPath)?;
 
-	let mut path = std::path::PathBuf::from(path_str);
-	let file_name=path.file_name().ok_or(Error::InvalidPath)?.to_owned();
-
-	path.pop();
+	let mut file_path = std::env::current_dir().map_err(Error::IO)?;
+	file_path.push(relative_path_str);
+	let mut dir_path = file_path.clone();
+	dir_path.pop();
 
 	// guaranteeFolderPath(path)
-	tokio::fs::create_dir_all(path).await.map_err(Error::IO)?;
+	tokio::fs::create_dir_all(dir_path).await.map_err(Error::IO)?;
 	// create the file
-	tokio::fs::write(file_name, code).await.map_err(Error::IO)?;
+	tokio::fs::write(file_path, code).await.map_err(Error::IO)?;
 
 	Ok(())
 }
