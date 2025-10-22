@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 enum Error {
 	NoNewlineToSeparatePath,
 	InvalidPath,
@@ -42,7 +44,32 @@ async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
 	Ok(())
 }
 
+enum Event{
+	Create{
+		path:PathBuf,
+		source:Vec<u8>,
+	},
+	Update{
+		path:PathBuf,
+		source:Vec<u8>,
+	},
+	Delete{
+		path:PathBuf,
+	},
+}
+struct Events{
+	events:Vec<Event>,
+}
 
+impl axum::response::IntoResponse for Events {
+	fn into_response(self) -> axum::response::Response {
+		unimplemented!()
+	}
+}
+
+async fn poll()->Result<Events,Error>{
+	unimplemented!()
+}
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error>{
@@ -54,7 +81,8 @@ async fn main() -> Result<(), std::io::Error>{
 
 	let app=axum::Router::new()
 		.route("/write_file", post(write_file))
-		.route("/write_file", get("heyo"));
+		.route("/write_file", get("heyo"))
+		.route("/poll",get(poll));
 
 	axum::serve(listener, app).await?;
 
