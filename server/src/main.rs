@@ -67,7 +67,20 @@ impl axum::response::IntoResponse for Events {
 	}
 }
 
+// watcher already spawns a thread
+// use mpsc sync channel
+// move sender into event handler
+// send event into channel on file change
+
 async fn poll()->Result<Events,Error>{
+	notify::recommended_watcher(event_handler);
+	// use mpsc sync channel
+	// put receiver in application state
+	// arc mutex application state
+	// begin long poll request
+	// lock application state
+	// revc from sync channel (tokio blocking thread)
+	// reply to long poll
 	unimplemented!()
 }
 
