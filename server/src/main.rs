@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use axum::extract::State;
 
 enum Error {
 	NoNewlineToSeparatePath,
@@ -71,9 +75,13 @@ impl axum::response::IntoResponse for Events {
 // use mpsc sync channel
 // move sender into event handler
 // send event into channel on file change
-
-async fn long_poll()->Result<Events,Error>{
-	notify::recommended_watcher(event_handler);
+struct ReceiverState{
+	rx:tokio::sync::mpsc::UnboundedReceiver<Result<notify::Event,notify::Error>>,
+}
+struct WatcherState{
+	watcher:notify::RecommendedWatcher,
+}
+async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body::Body)->Result<Events,Error>{
 	// use mpsc sync channel
 	// put receiver in application state
 	// arc mutex application state
@@ -81,7 +89,11 @@ async fn long_poll()->Result<Events,Error>{
 	// lock application state
 	// revc from sync channel (tokio blocking thread)
 	// reply to long poll
-	unimplemented!()
+	let mut events=Vec::new();
+	if let Some(first)=state.lock().await.rx.recv().await{
+		events.push(first);
+	}
+	panic!()
 }
 
 #[tokio::main]
@@ -89,13 +101,18 @@ async fn main() -> Result<(), std::io::Error>{
 	use axum::routing::{get, post};
 	println!("Starting Sidecar");
 
+	let (sx,rx)=tokio::sync::mpsc::unbounded_channel();
+	let watcher=notify::recommended_watcher(move|event|sx.send(event).unwrap()).unwrap();
+
 	let addr=std::net::SocketAddr::from(([127,0,0,1], 8080));
 	let listener=tokio::net::TcpListener::bind(addr).await?;
 
 	let app=axum::Router::new()
 		.route("/write_file", post(write_file))
 		.route("/write_file", get("heyo"))
-		.route("/poll",get(long_poll));
+		.route("/poll",get(long_poll))
+		.with_state(Arc::new(Mutex::new(ReceiverState{rx})))
+		.with_state(Arc::new(Mutex::new(WatcherState{watcher})));
 
 	axum::serve(listener, app).await?;
 
