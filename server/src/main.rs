@@ -72,7 +72,7 @@ impl axum::response::IntoResponse for Events {
 // move sender into event handler
 // send event into channel on file change
 
-async fn poll()->Result<Events,Error>{
+async fn long_poll()->Result<Events,Error>{
 	notify::recommended_watcher(event_handler);
 	// use mpsc sync channel
 	// put receiver in application state
@@ -95,7 +95,7 @@ async fn main() -> Result<(), std::io::Error>{
 	let app=axum::Router::new()
 		.route("/write_file", post(write_file))
 		.route("/write_file", get("heyo"))
-		.route("/poll",get(poll));
+		.route("/poll",get(long_poll));
 
 	axum::serve(listener, app).await?;
 
