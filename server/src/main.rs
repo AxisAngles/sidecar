@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -48,21 +47,8 @@ async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
 	Ok(())
 }
 
-enum Event{
-	Create{
-		path:PathBuf,
-		source:Vec<u8>,
-	},
-	Update{
-		path:PathBuf,
-		source:Vec<u8>,
-	},
-	Delete{
-		path:PathBuf,
-	},
-}
 struct Events{
-	events:Vec<Event>,
+	events:Vec<notify::Event>,
 }
 
 impl axum::response::IntoResponse for Events {
@@ -76,12 +62,25 @@ impl axum::response::IntoResponse for Events {
 // move sender into event handler
 // send event into channel on file change
 struct ReceiverState{
-	rx:tokio::sync::mpsc::UnboundedReceiver<Result<notify::Event,notify::Error>>,
+	rx:tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
 }
 struct WatcherState{
 	watcher:notify::RecommendedWatcher,
 }
-async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body::Body)->Result<Events,Error>{
+enum PollError{
+	Notify(notify::Error),
+}
+impl From<notify::Error> for PollError{
+	fn from(value:notify::Error)->Self{
+		PollError::Notify(value)
+	}
+}
+impl axum::response::IntoResponse for PollError{
+	fn into_response(self) -> axum::response::Response {
+		unimplemented!()
+	}
+}
+async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body::Body)->Result<Events,PollError>{
 	// use mpsc sync channel
 	// put receiver in application state
 	// arc mutex application state
@@ -89,11 +88,15 @@ async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body
 	// lock application state
 	// revc from sync channel (tokio blocking thread)
 	// reply to long poll
+	let rx=&mut state.lock().await.rx;
 	let mut events=Vec::new();
-	if let Some(first)=state.lock().await.rx.recv().await{
-		events.push(first);
+	if let Some(first)=rx.recv().await{
+		events.push(first?);
 	}
-	panic!()
+	while let Ok(additional)=rx.try_recv(){
+		events.push(additional?);
+	}
+	Ok(Events{events})
 }
 
 #[tokio::main]
