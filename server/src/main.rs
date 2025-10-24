@@ -106,7 +106,7 @@ async fn long_poll(state: axum::extract::State<SharedReceiver>) -> Result<Events
 }
 
 fn spawn_watcher(tx: mpsc::Sender<Event>) -> notify::Result<RecommendedWatcher> {
-	let mut watcher = notify::recommended_watcher(move |res| {
+	let mut watcher = notify::recommended_watcher(move |res:notify::Result<notify::Event>| {
 		let tx = tx.clone();
 		tokio::spawn(async move {
 			match res {
