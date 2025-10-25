@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use notify::Watcher;
 use tokio::sync::Mutex;
+use axum::response::Response;
 
 use axum::extract::State;
 
@@ -11,9 +12,8 @@ enum Error {
 }
 
 impl axum::response::IntoResponse for Error {
-	fn into_response(self) -> axum::response::Response {
+	fn into_response(self) -> Response {
 		use axum::http::StatusCode;
-		use axum::response::Response;
 		match self{
 			Error::NoNewlineToSeparatePath=>(StatusCode::INTERNAL_SERVER_ERROR, "NoNewlineToSeparatePath").into_response(),
 			Error::InvalidPath=>Response::builder().status(500).body("InvalidPath".into()).unwrap(),
@@ -53,13 +53,15 @@ async fn write_file(
 	Ok(())
 }
 
+#[derive(Debug)]
 struct Events{
 	events:Vec<notify::Event>,
 }
 
 impl axum::response::IntoResponse for Events {
-	fn into_response(self) -> axum::response::Response {
-		unimplemented!()
+	fn into_response(self) -> Response {
+		// just yeet the debug info back to the client
+		format!("{self:?}").into_response()
 	}
 }
 
@@ -73,6 +75,7 @@ struct ReceiverState{
 struct WatcherState{
 	watcher:notify::RecommendedWatcher,
 }
+#[derive(Debug)]
 enum PollError{
 	Notify(notify::Error),
 }
@@ -83,7 +86,9 @@ impl From<notify::Error> for PollError{
 }
 impl axum::response::IntoResponse for PollError{
 	fn into_response(self) -> axum::response::Response {
-		unimplemented!()
+		match self{
+			PollError::Notify(e)=>Response::builder().status(500).body(e.to_string().into()).unwrap(),
+		}
 	}
 }
 async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>)->Result<Events,PollError>{
