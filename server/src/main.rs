@@ -80,7 +80,7 @@ impl axum::response::IntoResponse for PollError{
 		unimplemented!()
 	}
 }
-async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body::Body)->Result<Events,PollError>{
+async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>)->Result<Events,PollError>{
 	// use mpsc sync channel
 	// put receiver in application state
 	// arc mutex application state
