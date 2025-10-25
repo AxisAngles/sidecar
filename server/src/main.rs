@@ -90,9 +90,11 @@ async fn long_poll(State(state):State<Arc<Mutex<ReceiverState>>>,body:axum::body
 	// reply to long poll
 	let rx=&mut state.lock().await.rx;
 	let mut events=Vec::new();
+	// wait to receive at least one event
 	if let Some(first)=rx.recv().await{
 		events.push(first?);
 	}
+	// add additional events
 	while let Ok(additional)=rx.try_recv(){
 		events.push(additional?);
 	}
