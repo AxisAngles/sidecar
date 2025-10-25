@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use notify::Watcher;
 use tokio::sync::Mutex;
 
 use axum::extract::State;
@@ -22,7 +23,10 @@ impl axum::response::IntoResponse for Error {
 }
 
 // path = game/whatever/code.luau
-async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
+async fn write_file(
+	State(state):State<Arc<Mutex<WatcherState>>>,
+	body: axum::body::Bytes,
+) -> Result<(), Error> {
 	let body = body.as_ref();
 	let path_position = body
 		.iter()
@@ -42,7 +46,9 @@ async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
 	// guaranteeFolderPath(path)
 	tokio::fs::create_dir_all(dir_path).await.map_err(Error::IO)?;
 	// create the file
-	tokio::fs::write(file_path, code).await.map_err(Error::IO)?;
+	tokio::fs::write(&file_path, code).await.map_err(Error::IO)?;
+
+	state.lock().await.watcher.watch(&file_path, notify::RecursiveMode::NonRecursive).unwrap();
 
 	Ok(())
 }
@@ -115,9 +121,9 @@ async fn main() -> Result<(), std::io::Error>{
 	let app=axum::Router::new()
 		.route("/write_file", post(write_file))
 		.route("/write_file", get("heyo"))
+		.with_state(Arc::new(Mutex::new(WatcherState{watcher})))
 		.route("/poll",get(long_poll))
-		.with_state(Arc::new(Mutex::new(ReceiverState{rx})))
-		.with_state(Arc::new(Mutex::new(WatcherState{watcher})));
+		.with_state(Arc::new(Mutex::new(ReceiverState{rx})));
 
 	axum::serve(listener, app).await?;
 
