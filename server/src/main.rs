@@ -79,10 +79,10 @@ fn run_server(base_dir: &Path) {
 			let mut websocket = accept(stream_to_plugin).unwrap();
 			for event_result in receiver.iter() {
 				let event = event_result.unwrap();
+				println!("{event:?}");
 				match event.kind {
 					notify::EventKind::Create(CreateKind::File) | notify::EventKind::Create(CreateKind::Any) => {
 						for path in event.paths {
-							println!("creating {path:?}");
 							let mut message = Vec::new();
 							message.push(b'c'); // c is create
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
@@ -93,7 +93,6 @@ fn run_server(base_dir: &Path) {
 					}
 					notify::EventKind::Modify(ModifyKind::Data(_)) | notify::EventKind::Modify(ModifyKind::Any) => {
 						for path in event.paths {
-							println!("updating {path:?}");
 							let mut message = Vec::new();
 							message.push(b'u'); // u is update
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
@@ -110,7 +109,7 @@ fn run_server(base_dir: &Path) {
 							websocket.send(message.into()).unwrap();
 						}
 					}
-					other => println!("{other:?}"),
+					_ => {}
 				}
 			}
 		});
