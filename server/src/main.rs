@@ -4,7 +4,6 @@ use notify::event::ModifyKind;
 use notify::event::RemoveKind;
 use std::env::current_dir;
 use std::net::TcpListener;
-use std::path::PathBuf;
 use std::thread::spawn;
 use tungstenite::accept;
 
@@ -43,25 +42,23 @@ fn write_file(body: &[u8]) -> Result<(), Error> {
 }
 
 fn main() {
-	let listener_to_plugin = TcpListener::bind("127.0.0.1:8080").unwrap();
-	let listener_to_server = TcpListener::bind("127.0.0.1:8081").unwrap();
-	let mut incoming_iterator_to_plugin = listener_to_plugin.incoming();
+	let listener_to_server = TcpListener::bind("127.0.0.1:8080").unwrap();
+	let listener_to_plugin = TcpListener::bind("127.0.0.1:8081").unwrap();
 	let mut incoming_iterator_to_server = listener_to_server.incoming();
+	let mut incoming_iterator_to_plugin = listener_to_plugin.incoming();
 
 	loop {
-		let stream_to_server = incoming_iterator_to_server.next().unwrap().unwrap();
-		let stream_to_plugin = incoming_iterator_to_plugin.next().unwrap().unwrap();
-
 		let (sender, receiver) = std::sync::mpsc::sync_channel(100);
 		let mut watcher = notify::recommended_watcher(move |result| {
 			sender.send(result).unwrap();
 		})
-.unwrap();
+		.unwrap();
 		watcher
 			.watch(&current_dir().unwrap(), notify::RecursiveMode::Recursive)
 			.unwrap();
 
-		spawn(move || {
+		let stream_to_server = incoming_iterator_to_server.next().unwrap().unwrap();
+		let to_server_join_handle = spawn(move || {
 			let mut websocket = accept(stream_to_server).unwrap();
 			loop {
 				let read_result = websocket.read();
@@ -72,10 +69,11 @@ fn main() {
 			}
 		});
 
-		spawn(move || {
+		let stream_to_plugin = incoming_iterator_to_plugin.next().unwrap().unwrap();
+		let to_plugin_join_handle = spawn(move || {
 			// move watcher into this thread, otherwise it gets dropped at the end of the containing loop
 			// let _ = watcher, does not actually capture the watcher, btw
-			let watcher = watcher;
+			let _watcher = watcher;
 			let mut websocket = accept(stream_to_plugin).unwrap();
 			for event_result in receiver.iter() {
 				let event = event_result.unwrap();
@@ -108,14 +106,12 @@ fn main() {
 							websocket.send(message.into()).unwrap();
 						}
 					}
-					// notify::EventKind::Modify(modify_kind) => todo!(),
-					// notify::EventKind::Remove(remove_kind) => todo!(),
 					other => println!("{other:?}"),
 				}
 			}
 		});
+
+		to_server_join_handle.join().unwrap();
+		to_plugin_join_handle.join().unwrap();
 	}
 }
-
-// iowriter
-// i16
