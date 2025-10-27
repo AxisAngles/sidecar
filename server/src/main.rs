@@ -122,3 +122,87 @@ fn run_server(base_dir: &Path) {
 fn main() {
 	run_server(&current_dir().unwrap());
 }
+
+#[cfg(test)]
+mod test {
+	use super::*;
+	#[test]
+	fn test_create_update_delete() {
+		// set up paths
+		let fname = "test.luau";
+		let mut cd = current_dir().unwrap();
+		cd.push("test");
+		let mut fpath = cd.clone();
+		fpath.push(fname);
+
+		// clean up from previous tests
+		_ = std::fs::remove_file(&fpath);
+
+		// run server
+		let base_dir = cd.clone();
+		spawn(move || {
+			run_server(&base_dir);
+		});
+		// let the server start up (todo: gracefully detect startup completion)
+		std::thread::sleep(std::time::Duration::from_millis(1));
+
+		// connect to server
+		let (mut c_write, _) = tungstenite::connect("ws://127.0.0.1:8080").unwrap();
+		let (mut c_updates, _) = tungstenite::connect("ws://127.0.0.1:8081").unwrap();
+
+		// spawn a thread to monitor the updates because we can't read without blocking the main thread.
+		// this is a compatibility layer to allow us to throw away junk events.
+		let (send, recv) = std::sync::mpsc::channel();
+		spawn(move || {
+			loop {
+				send.send(c_updates.read().unwrap().into_data()).unwrap();
+			}
+		});
+
+		// write file
+		let fcode = "print(\"test\")";
+		let fpath_str = fpath.as_os_str().to_str().unwrap();
+		let serialized = format!("{fname}\n{fcode}");
+		println!("EXPECT: create + junk events");
+		c_write.send(serialized.as_bytes().into()).unwrap();
+		// wait for file create event
+		let observed_event = recv.recv().unwrap();
+		// drop junk
+		std::thread::sleep(std::time::Duration::from_millis(1));
+		while let Ok(junk) = recv.try_recv() {
+			println!("JUNK: {junk:?}");
+		}
+		let expected_event = format!("c{}\n{fcode}", fpath_str);
+		assert_eq!(observed_event, expected_event);
+		// assert file exists
+		assert_eq!(std::fs::read(&fpath).unwrap(), fcode.as_bytes());
+
+		// update file
+		let fcode = "print(\"test2\")";
+		println!("EXPECT: update + junk events");
+		std::fs::write(&fpath, fcode).unwrap();
+		// assert a file update was recieved
+		let observed_data = recv.recv().unwrap();
+		// drop junk
+		while let Ok(junk) = recv.try_recv() {
+			println!("JUNK: {junk:?}");
+		}
+		let expected_data = format!("u{}\n{fcode}", fpath_str);
+		assert_eq!(observed_data, expected_data);
+
+		// delete file
+		println!("EXPECT: remove + junk events");
+		std::fs::remove_file(&fpath).unwrap();
+		// assert a file remove was recieved
+		let observed_data = recv.recv().unwrap();
+		// drop junk
+		std::thread::sleep(std::time::Duration::from_millis(1));
+		while let Ok(junk) = recv.try_recv() {
+			println!("JUNK: {junk:?}");
+		}
+		let expected_data = format!("d{}", fpath_str);
+		assert_eq!(observed_data, expected_data);
+
+		// close server (how?)
+	}
+}
