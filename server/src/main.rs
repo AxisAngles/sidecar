@@ -1,32 +1,18 @@
+use std::net::TcpListener;
+use std::thread::spawn;
+use tungstenite::accept;
+use tungstenite::Bytes;
+
+#[derive(Debug)]
 enum Error {
 	NoNewlineToSeparatePath,
 	InvalidPath,
 	IO(std::io::Error),
 }
 
-impl axum::response::IntoResponse for Error {
-	fn into_response(self) -> axum::response::Response {
-		use axum::http::StatusCode;
-		use axum::response::Response;
-		match self {
-			Error::NoNewlineToSeparatePath => {
-				(StatusCode::INTERNAL_SERVER_ERROR, "NoNewlineToSeparatePath").into_response()
-			}
-			Error::InvalidPath => Response::builder()
-				.status(500)
-				.body("InvalidPath".into())
-				.unwrap(),
-			Error::IO(io_error) => Response::builder()
-				.status(500)
-				.body(io_error.to_string().into())
-				.unwrap(),
-		}
-	}
-}
-
 // path = game/whatever/code.luau
-async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
-	let body = body.as_ref();
+fn write_file(body: &[u8]) -> Result<(), Error> {
+	//let body = body.as_ref();
 	let path_position = body
 		.iter()
 		.position(|c| *c == b'\n')
@@ -43,28 +29,33 @@ async fn write_file(body: axum::body::Bytes) -> Result<(), Error> {
 	dir_path.pop();
 
 	// guaranteeFolderPath(path)
-	tokio::fs::create_dir_all(dir_path)
-		.await
-		.map_err(Error::IO)?;
+	std::fs::create_dir_all(dir_path).map_err(Error::IO)?;
 	// create the file
-	tokio::fs::write(file_path, code).await.map_err(Error::IO)?;
+	std::fs::write(file_path, code).map_err(Error::IO)?;
 
 	Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
-	use axum::routing::{get, post};
-	println!("Starting Sidecar");
+fn main() {
+	let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+	let mut incoming_iterator = listener.incoming();
+	loop {
+		let stream_in = incoming_iterator.next().unwrap().unwrap();
+		spawn(move || {
+			let mut websocket = accept(stream_in).unwrap();
+			loop {
+				let read_result = websocket.read();
+				match read_result {
+					Ok(message) => write_file(&message.into_data()).unwrap(),
+					Err(_) => break,
+				};
+			}
+		});
 
-	let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8080));
-	let listener = tokio::net::TcpListener::bind(addr).await?;
+		// let stream_out = incoming_iterator.next().unwrap().unwrap();
+		// spawn(move || {
+		// 	let websocket = accept(stream_out).unwrap();
 
-	let app = axum::Router::new()
-		.route("/write_file", post(write_file))
-		.route("/write_file", get("heyo"));
-
-	axum::serve(listener, app).await?;
-
-	Ok(())
+		// });
+	}
 }
