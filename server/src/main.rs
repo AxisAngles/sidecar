@@ -49,7 +49,7 @@ fn run_server(base_dir: &Path) {
 	let mut incoming_iterator_to_plugin = listener_to_plugin.incoming();
 
 	loop {
-		let (sender, receiver) = std::sync::mpsc::sync_channel(100);
+		let (sender, receiver) = std::sync::mpsc::channel();
 		let mut watcher = notify::recommended_watcher(move |result| {
 			sender.send(result).unwrap();
 		})
