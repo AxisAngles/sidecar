@@ -1,8 +1,13 @@
+use std::env::current_dir;
 use std::net::TcpListener;
 use std::thread::spawn;
+use notify::event::CreateKind;
+use notify::event::ModifyKind;
+use notify::event::RemoveKind;
+use notify::Watcher;
 use tungstenite::accept;
-use tungstenite::Bytes;
 
+#[expect(unused)]
 #[derive(Debug)]
 enum Error {
 	NoNewlineToSeparatePath,
@@ -37,12 +42,15 @@ fn write_file(body: &[u8]) -> Result<(), Error> {
 }
 
 fn main() {
-	let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-	let mut incoming_iterator = listener.incoming();
+	let listener_to_server = TcpListener::bind("127.0.0.1:8080").unwrap();
+	let listener_to_plugin = TcpListener::bind("127.0.0.1:8081").unwrap();
+	let mut incoming_iterator_to_server = listener_to_server.incoming();
+	let mut incoming_iterator_to_plugin = listener_to_plugin.incoming();
+
 	loop {
-		let stream_in = incoming_iterator.next().unwrap().unwrap();
+		let stream_to_server = incoming_iterator_to_server.next().unwrap().unwrap();
 		spawn(move || {
-			let mut websocket = accept(stream_in).unwrap();
+			let mut websocket = accept(stream_to_server).unwrap();
 			loop {
 				let read_result = websocket.read();
 				match read_result {
@@ -52,10 +60,51 @@ fn main() {
 			}
 		});
 
-		// let stream_out = incoming_iterator.next().unwrap().unwrap();
-		// spawn(move || {
-		// 	let websocket = accept(stream_out).unwrap();
+		let (sender, receiver) = std::sync::mpsc::sync_channel(100);
+		let mut watcher = notify::recommended_watcher(move |result| {
+			sender.send(result).unwrap();
+		}).unwrap();
+		watcher.watch(&current_dir().unwrap(), notify::RecursiveMode::Recursive).unwrap();
 
-		// });
+		let stream_to_plugin = incoming_iterator_to_plugin.next().unwrap().unwrap();
+		spawn(move || {
+			let mut websocket = accept(stream_to_plugin).unwrap();
+			for event_result in receiver.iter() {
+				let event = event_result.unwrap();
+				match event.kind {
+					notify::EventKind::Create(CreateKind::File) => for path in event.paths {
+						let mut message = Vec::new();
+						message.push(b'c'); // c is create
+						message.extend_from_slice(path.as_os_str().as_encoded_bytes());
+						message.push(b'\n');
+						message.extend_from_slice(&std::fs::read(path).unwrap());
+						websocket.send(message.into()).unwrap();
+					},
+					notify::EventKind::Modify(ModifyKind::Data(_)) => for path in event.paths {
+						let mut message = Vec::new();
+						message.push(b'u'); // u is update
+						message.extend_from_slice(path.as_os_str().as_encoded_bytes());
+						message.push(b'\n');
+						message.extend_from_slice(&std::fs::read(path).unwrap());
+						websocket.send(message.into()).unwrap();
+					},
+					notify::EventKind::Remove(RemoveKind::File) => for path in event.paths {
+						let mut message = Vec::new();
+						message.push(b'd'); // d is delete
+						message.extend_from_slice(path.as_os_str().as_encoded_bytes());
+						websocket.send(message.into()).unwrap();
+					},
+					// notify::EventKind::Modify(modify_kind) => todo!(),
+					// notify::EventKind::Remove(remove_kind) => todo!(),
+					other => println!("{other:?}"),
+				}
+			}
+			// receiver.OnReceive:connect(function(message)
+			// 	websocket.send(message)
+			// end)
+		});
 	}
 }
+
+// iowriter
+// i16
