@@ -59,3 +59,18 @@ fn main() {
 		// });
 	}
 }
+
+#[cfg(test)]
+mod test{
+	use super::*;
+	#[test]
+	fn smoke_test(){
+		// run server
+		// connect to server
+		// write file
+		// assert file exists
+		// update file
+		// assert a file update was recieved
+		// close server
+	}
+}
