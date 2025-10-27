@@ -4,6 +4,7 @@ use notify::event::ModifyKind;
 use notify::event::RemoveKind;
 use std::env::current_dir;
 use std::net::TcpListener;
+use std::path::Path;
 use std::thread::spawn;
 use tungstenite::accept;
 
@@ -16,7 +17,7 @@ enum Error {
 }
 
 // path = game/whatever/code.luau
-fn write_file(body: &[u8]) -> Result<(), Error> {
+fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
 	//let body = body.as_ref();
 	let path_position = body
 		.iter()
@@ -28,7 +29,7 @@ fn write_file(body: &[u8]) -> Result<(), Error> {
 
 	let relative_path_str = str::from_utf8(relative_path).map_err(|_| Error::InvalidPath)?;
 
-	let mut file_path = std::env::current_dir().map_err(Error::IO)?;
+	let mut file_path = base_dir.to_owned();
 	file_path.push(relative_path_str);
 	let mut dir_path = file_path.clone();
 	dir_path.pop();
@@ -41,7 +42,7 @@ fn write_file(body: &[u8]) -> Result<(), Error> {
 	Ok(())
 }
 
-fn main() {
+fn run_server(base_dir: &Path) {
 	let listener_to_server = TcpListener::bind("127.0.0.1:8080").unwrap();
 	let listener_to_plugin = TcpListener::bind("127.0.0.1:8081").unwrap();
 	let mut incoming_iterator_to_server = listener_to_server.incoming();
@@ -54,16 +55,17 @@ fn main() {
 		})
 		.unwrap();
 		watcher
-			.watch(&current_dir().unwrap(), notify::RecursiveMode::Recursive)
+			.watch(base_dir, notify::RecursiveMode::Recursive)
 			.unwrap();
 
 		let stream_to_server = incoming_iterator_to_server.next().unwrap().unwrap();
+		let base_dir = base_dir.to_owned();
 		let to_server_join_handle = spawn(move || {
 			let mut websocket = accept(stream_to_server).unwrap();
 			loop {
 				let read_result = websocket.read();
 				match read_result {
-					Ok(message) => write_file(&message.into_data()).unwrap(),
+					Ok(message) => write_file(&base_dir, &message.into_data()).unwrap(),
 					Err(_) => break,
 				};
 			}
@@ -116,4 +118,8 @@ fn main() {
 		to_server_join_handle.join().unwrap();
 		to_plugin_join_handle.join().unwrap();
 	}
+}
+
+fn main() {
+	run_server(&current_dir().unwrap());
 }
