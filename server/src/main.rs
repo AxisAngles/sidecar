@@ -1,12 +1,13 @@
+use futures_util::SinkExt;
 use notify::Watcher;
 use notify::event::CreateKind;
 use notify::event::ModifyKind;
 use notify::event::RemoveKind;
+use tokio_tungstenite::accept_async;
 use std::env::current_dir;
-use std::net::TcpListener;
+use tokio::net::TcpListener;
 use std::path::Path;
-use std::thread::spawn;
-use tungstenite::accept;
+use futures_util::StreamExt;
 
 #[expect(unused)]
 #[derive(Debug)]
@@ -42,92 +43,87 @@ fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
 	Ok(())
 }
 
-fn run_server(base_dir: &Path) {
-	let listener_to_server = TcpListener::bind("127.0.0.1:8080").unwrap();
-	let listener_to_plugin = TcpListener::bind("127.0.0.1:8081").unwrap();
-	let mut incoming_iterator_to_server = listener_to_server.incoming();
-	let mut incoming_iterator_to_plugin = listener_to_plugin.incoming();
+async fn run_server(base_dir: &Path) {
+	let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
 
-	loop {
-		let (sender, receiver) = std::sync::mpsc::channel();
-		let mut watcher = notify::recommended_watcher(move |result| {
-			sender.send(result).unwrap();
-		})
-		.unwrap();
-		watcher
-			.watch(base_dir, notify::RecursiveMode::Recursive)
-			.unwrap();
+	let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+	let mut watcher = notify::recommended_watcher(move |result| {
+		sender.send(result).unwrap();
+	}).unwrap();
 
-		let stream_to_server = incoming_iterator_to_server.next().unwrap().unwrap();
-		let base_dir = base_dir.to_owned();
-		let to_server_join_handle = spawn(move || {
-			let mut websocket = accept(stream_to_server).unwrap();
-			loop {
-				let read_result = websocket.read();
-				match read_result {
-					Ok(message) => write_file(&base_dir, &message.into_data()).unwrap(),
-					Err(_) => break,
-				};
-			}
-		});
+	watcher.watch(base_dir, notify::RecursiveMode::Recursive).unwrap();
 
-		let stream_to_plugin = incoming_iterator_to_plugin.next().unwrap().unwrap();
-		let to_plugin_join_handle = spawn(move || {
-			// move watcher into this thread, otherwise it gets dropped at the end of the containing loop
-			// let _ = watcher, does not actually capture the watcher, btw
-			let _watcher = watcher;
-			let mut websocket = accept(stream_to_plugin).unwrap();
-			for event_result in receiver.iter() {
-				let event = event_result.unwrap();
-				println!("{event:?}");
-				match event.kind {
-					notify::EventKind::Create(CreateKind::File) | notify::EventKind::Create(CreateKind::Any) => {
-						for path in event.paths {
+	while let Ok((stream, addr)) = listener.accept().await {
+		println!("connecting to addr {addr:?}");
+		let websocket_stream = accept_async(stream).await.unwrap();
+		let (mut outgoing, mut incoming) = websocket_stream.split();
+
+		// what we want to write
+		loop {
+			tokio::select! {
+				event_result_option = receiver.recv() => match event_result_option {
+					Some(Ok(notify::Event{kind : notify::EventKind::Create(CreateKind::File) | notify::EventKind::Create(CreateKind::Any), paths, attrs:_})) => {
+						for path in paths {
 							let mut message = Vec::new();
 							message.push(b'c'); // c is create
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
 							message.push(b'\n');
 							message.extend_from_slice(&std::fs::read(path).unwrap());
-							websocket.send(message.into()).unwrap();
+							outgoing.send(message.into()).await.unwrap();
 						}
 					}
-					notify::EventKind::Modify(ModifyKind::Data(_)) | notify::EventKind::Modify(ModifyKind::Any) => {
-						for path in event.paths {
+					Some(Ok(notify::Event{kind : notify::EventKind::Modify(ModifyKind::Data(_)) | notify::EventKind::Modify(ModifyKind::Any), paths, attrs:_})) => {
+						for path in paths {
 							let mut message = Vec::new();
 							message.push(b'u'); // u is update
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
 							message.push(b'\n');
 							message.extend_from_slice(&std::fs::read(path).unwrap());
-							websocket.send(message.into()).unwrap();
+							outgoing.send(message.into()).await.unwrap();
 						}
 					}
-					notify::EventKind::Remove(RemoveKind::File) | notify::EventKind::Remove(RemoveKind::Any) => {
-						for path in event.paths {
+					Some(Ok(notify::Event{kind : notify::EventKind::Remove(RemoveKind::File) | notify::EventKind::Remove(RemoveKind::Any), paths, attrs:_})) => {
+						for path in paths {
 							let mut message = Vec::new();
 							message.push(b'd'); // d is delete
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
-							websocket.send(message.into()).unwrap();
+							outgoing.send(message.into()).await.unwrap();
 						}
 					}
-					_ => {}
+					Some(result) => {result.unwrap();},
+					None => break,
+				},
+				message_result_option = incoming.next() => match message_result_option {
+					Some(Ok(message)) => {write_file(base_dir, &message.into_data()).unwrap();},
+					Some(result) => {result.unwrap();},
+					None => todo!(),
 				}
 			}
-		});
-
-		to_server_join_handle.join().unwrap();
-		to_plugin_join_handle.join().unwrap();
-	}
+		}
+    };
 }
 
-fn main() {
-	run_server(&current_dir().unwrap());
+#[tokio::main]
+async fn main() {
+	run_server(&current_dir().unwrap()).await;
 }
+
+// NEXT UP:
+// race two futures
+// file watcher outputting an event vs websocket outputting an event
+// whichever one wins, you do somthing
+// if file watcher does something, it sends, otherwise it resets the loop
+// 2 threads, file watcher spawns a thread no matter what.
+// receive the events on the main thread through a sync channel
+// main thread is responsible for receiving from the websocket
+// use select to run code on whatever thread fires off first
 
 #[cfg(test)]
 mod test {
 	use super::*;
-	#[test]
-	fn test_create_update_delete() {
+	use tokio::spawn;
+	#[tokio::test]
+	async fn test_create_update_delete() {
 		// set up paths
 		let fname = "test.luau";
 		let mut cd = current_dir().unwrap();
@@ -140,37 +136,33 @@ mod test {
 
 		// run server
 		let base_dir = cd.clone();
-		spawn(move || {
-			run_server(&base_dir);
+		spawn(async move {
+			run_server(&base_dir).await;
 		});
 		// let the server start up (todo: gracefully detect startup completion)
 		std::thread::sleep(std::time::Duration::from_millis(5));
 
 		// connect to server
-		let (mut c_write, _) = tungstenite::connect("ws://127.0.0.1:8080").unwrap();
-		let (mut c_updates, _) = tungstenite::connect("ws://127.0.0.1:8081").unwrap();
-
-		// spawn a thread to monitor the updates because we can't read without blocking the main thread.
-		// this is a compatibility layer to allow us to throw away junk events.
-		let (send, recv) = std::sync::mpsc::channel();
-		spawn(move || {
-			loop {
-				send.send(c_updates.read().unwrap().into_data()).unwrap();
-			}
-		});
+		let (mut connection, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:8080").await.unwrap();
 
 		// write file
 		let fcode = "print(\"test\")";
 		let fpath_str = fpath.as_os_str().to_str().unwrap();
 		let serialized = format!("{fname}\n{fcode}");
 		println!("EXPECT: create + junk events");
-		c_write.send(serialized.as_bytes().into()).unwrap();
+		connection.send(serialized.as_bytes().into()).await.unwrap();
 		// wait for file create event
-		let observed_event = recv.recv().unwrap();
+		let observed_event = connection.next().await.unwrap().unwrap().into_data();
 		// drop junk
-		std::thread::sleep(std::time::Duration::from_millis(5));
-		while let Ok(junk) = recv.try_recv() {
-			println!("JUNK: {junk:?}");
+		//std::thread::sleep(std::time::Duration::from_millis(5));
+		tokio::select! {
+			// async {
+			// 	while let Some(Ok(junk)) = connection.next().await {
+			// 		println!("JUNK: {junk:?}");
+			// 	}
+			// }.await,
+			//tokio::time
+			_ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
 		}
 		let expected_event = format!("c{}\n{fcode}", fpath_str);
 		assert_eq!(observed_event, expected_event);
@@ -182,7 +174,7 @@ mod test {
 		println!("EXPECT: update + junk events");
 		std::fs::write(&fpath, fcode).unwrap();
 		// assert a file update was recieved
-		let observed_data = recv.recv().unwrap();
+		let observed_data = recv.recv().await.unwrap();
 		// drop junk
 		std::thread::sleep(std::time::Duration::from_millis(5));
 		while let Ok(junk) = recv.try_recv() {
@@ -195,7 +187,7 @@ mod test {
 		println!("EXPECT: remove + junk events");
 		std::fs::remove_file(&fpath).unwrap();
 		// assert a file remove was recieved
-		let observed_data = recv.recv().unwrap();
+		let observed_data = recv.recv().await.unwrap();
 		// drop junk
 		std::thread::sleep(std::time::Duration::from_millis(5));
 		while let Ok(junk) = recv.try_recv() {
