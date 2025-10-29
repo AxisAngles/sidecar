@@ -144,7 +144,7 @@ mod test {
 			run_server(&base_dir);
 		});
 		// let the server start up (todo: gracefully detect startup completion)
-		std::thread::sleep(std::time::Duration::from_millis(1));
+		std::thread::sleep(std::time::Duration::from_millis(5));
 
 		// connect to server
 		let (mut c_write, _) = tungstenite::connect("ws://127.0.0.1:8080").unwrap();
@@ -168,7 +168,7 @@ mod test {
 		// wait for file create event
 		let observed_event = recv.recv().unwrap();
 		// drop junk
-		std::thread::sleep(std::time::Duration::from_millis(1));
+		std::thread::sleep(std::time::Duration::from_millis(5));
 		while let Ok(junk) = recv.try_recv() {
 			println!("JUNK: {junk:?}");
 		}
@@ -184,6 +184,7 @@ mod test {
 		// assert a file update was recieved
 		let observed_data = recv.recv().unwrap();
 		// drop junk
+		std::thread::sleep(std::time::Duration::from_millis(5));
 		while let Ok(junk) = recv.try_recv() {
 			println!("JUNK: {junk:?}");
 		}
@@ -196,7 +197,7 @@ mod test {
 		// assert a file remove was recieved
 		let observed_data = recv.recv().unwrap();
 		// drop junk
-		std::thread::sleep(std::time::Duration::from_millis(1));
+		std::thread::sleep(std::time::Duration::from_millis(5));
 		while let Ok(junk) = recv.try_recv() {
 			println!("JUNK: {junk:?}");
 		}
