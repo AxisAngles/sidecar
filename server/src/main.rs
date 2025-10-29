@@ -18,7 +18,7 @@ enum Error {
 }
 
 // path = game/whatever/code.luau
-fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
+async fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
 	//let body = body.as_ref();
 	let path_position = body
 		.iter()
@@ -36,9 +36,9 @@ fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
 	dir_path.pop();
 
 	// guaranteeFolderPath(path)
-	std::fs::create_dir_all(dir_path).map_err(Error::IO)?;
+	tokio::fs::create_dir_all(dir_path).await.map_err(Error::IO)?;
 	// create the file
-	std::fs::write(file_path, code).map_err(Error::IO)?;
+	tokio::fs::write(file_path, code).await.map_err(Error::IO)?;
 
 	Ok(())
 }
@@ -55,8 +55,7 @@ async fn run_server(base_dir: &Path) {
 
 	while let Ok((stream, addr)) = listener.accept().await {
 		println!("connecting to addr {addr:?}");
-		let websocket_stream = accept_async(stream).await.unwrap();
-		let (mut outgoing, mut incoming) = websocket_stream.split();
+		let mut websocket_stream = accept_async(stream).await.unwrap();
 
 		// what we want to write
 		loop {
@@ -68,8 +67,8 @@ async fn run_server(base_dir: &Path) {
 							message.push(b'c'); // c is create
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
 							message.push(b'\n');
-							message.extend_from_slice(&std::fs::read(path).unwrap());
-							outgoing.send(message.into()).await.unwrap();
+							message.extend_from_slice(&tokio::fs::read(path).await.unwrap());
+							websocket_stream.send(message.into()).await.unwrap();
 						}
 					}
 					Some(Ok(notify::Event{kind : notify::EventKind::Modify(ModifyKind::Data(_)) | notify::EventKind::Modify(ModifyKind::Any), paths, attrs:_})) => {
@@ -78,8 +77,8 @@ async fn run_server(base_dir: &Path) {
 							message.push(b'u'); // u is update
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
 							message.push(b'\n');
-							message.extend_from_slice(&std::fs::read(path).unwrap());
-							outgoing.send(message.into()).await.unwrap();
+							message.extend_from_slice(&tokio::fs::read(path).await.unwrap());
+							websocket_stream.send(message.into()).await.unwrap();
 						}
 					}
 					Some(Ok(notify::Event{kind : notify::EventKind::Remove(RemoveKind::File) | notify::EventKind::Remove(RemoveKind::Any), paths, attrs:_})) => {
@@ -87,16 +86,16 @@ async fn run_server(base_dir: &Path) {
 							let mut message = Vec::new();
 							message.push(b'd'); // d is delete
 							message.extend_from_slice(path.as_os_str().as_encoded_bytes());
-							outgoing.send(message.into()).await.unwrap();
+							websocket_stream.send(message.into()).await.unwrap();
 						}
 					}
 					Some(result) => {result.unwrap();},
 					None => break,
 				},
-				message_result_option = incoming.next() => match message_result_option {
-					Some(Ok(message)) => {write_file(base_dir, &message.into_data()).unwrap();},
+				message_result_option = websocket_stream.next() => match message_result_option {
+					Some(Ok(message)) => {write_file(base_dir, &message.into_data()).await.unwrap();},
 					Some(result) => {result.unwrap();},
-					None => todo!(),
+					None => break,
 				}
 			}
 		}
@@ -132,70 +131,75 @@ mod test {
 		fpath.push(fname);
 
 		// clean up from previous tests
-		_ = std::fs::remove_file(&fpath);
+		_ = tokio::fs::remove_file(&fpath).await;
 
 		// run server
 		let base_dir = cd.clone();
-		spawn(async move {
+		let server = spawn(async move {
 			run_server(&base_dir).await;
 		});
+
 		// let the server start up (todo: gracefully detect startup completion)
-		std::thread::sleep(std::time::Duration::from_millis(5));
+		tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-		// connect to server
-		let (mut connection, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:8080").await.unwrap();
+		let client = spawn(async move{
+			// connect to server
+			let (mut connection, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:8080").await.unwrap();
 
-		// write file
-		let fcode = "print(\"test\")";
-		let fpath_str = fpath.as_os_str().to_str().unwrap();
-		let serialized = format!("{fname}\n{fcode}");
-		println!("EXPECT: create + junk events");
-		connection.send(serialized.as_bytes().into()).await.unwrap();
-		// wait for file create event
-		let observed_event = connection.next().await.unwrap().unwrap().into_data();
-		// drop junk
-		//std::thread::sleep(std::time::Duration::from_millis(5));
-		tokio::select! {
-			// async {
-			// 	while let Some(Ok(junk)) = connection.next().await {
-			// 		println!("JUNK: {junk:?}");
-			// 	}
-			// }.await,
-			//tokio::time
-			_ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
-		}
-		let expected_event = format!("c{}\n{fcode}", fpath_str);
-		assert_eq!(observed_event, expected_event);
-		// assert file exists
-		assert_eq!(std::fs::read(&fpath).unwrap(), fcode.as_bytes());
+			macro_rules! drop_junk {
+				() => {
+					// drop junk for up to 5ms
+					tokio::select! {
+						_ = async {
+							while let Some(junk) = connection.next().await {
+								println!("JUNK: {junk:?}");
+							}
+						} => {}
+						//tokio::time
+						_ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+					}
+				};
+			}
 
-		// update file
-		let fcode = "print(\"test2\")";
-		println!("EXPECT: update + junk events");
-		std::fs::write(&fpath, fcode).unwrap();
-		// assert a file update was recieved
-		let observed_data = recv.recv().await.unwrap();
-		// drop junk
-		std::thread::sleep(std::time::Duration::from_millis(5));
-		while let Ok(junk) = recv.try_recv() {
-			println!("JUNK: {junk:?}");
-		}
-		let expected_data = format!("u{}\n{fcode}", fpath_str);
-		assert_eq!(observed_data, expected_data);
+			// write file
+			let fcode = "print(\"test\")";
+			let fpath_str = fpath.as_os_str().to_str().unwrap();
+			let serialized = format!("{fname}\n{fcode}");
+			println!("EXPECT: create + junk events");
+			connection.send(serialized.as_bytes().into()).await.unwrap();
+			// wait for file create event
+			let observed_event = connection.next().await.unwrap().unwrap().into_data();
+			let expected_event = format!("c{}\n{fcode}", fpath_str);
+			assert_eq!(observed_event, expected_event);
+			// assert file exists
+			assert_eq!(tokio::fs::read(&fpath).await.unwrap(), fcode.as_bytes());
+			drop_junk!();
 
-		// delete file
-		println!("EXPECT: remove + junk events");
-		std::fs::remove_file(&fpath).unwrap();
-		// assert a file remove was recieved
-		let observed_data = recv.recv().await.unwrap();
-		// drop junk
-		std::thread::sleep(std::time::Duration::from_millis(5));
-		while let Ok(junk) = recv.try_recv() {
-			println!("JUNK: {junk:?}");
-		}
-		let expected_data = format!("d{}", fpath_str);
-		assert_eq!(observed_data, expected_data);
+			// update file
+			let fcode = "print(\"test2\")";
+			println!("EXPECT: update + junk events");
+			tokio::fs::write(&fpath, fcode).await.unwrap();
+			// assert a file update was recieved
+			let observed_data = connection.next().await.unwrap().unwrap().into_data();
+			let expected_data = format!("u{}\n{fcode}", fpath_str);
+			assert_eq!(observed_data, expected_data);
+			drop_junk!();
 
-		// close server (how?)
+			// delete file
+			println!("EXPECT: remove + junk events");
+			tokio::fs::remove_file(&fpath).await.unwrap();
+			// assert a file remove was recieved
+			let observed_data = connection.next().await.unwrap().unwrap().into_data();
+			let expected_data = format!("d{}", fpath_str);
+			assert_eq!(observed_data, expected_data);
+			drop_junk!();
+
+			// close connection
+			connection.close(None).await.unwrap();
+		});
+
+		// graceful shutdown (server shuts down when connection is closed)
+		client.await.unwrap();
+		server.await.unwrap();
 	}
 }
