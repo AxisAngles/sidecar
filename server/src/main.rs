@@ -156,7 +156,7 @@ mod test {
 							}
 						} => {}
 						//tokio::time
-						_ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+						_ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
 					}
 				};
 			}
