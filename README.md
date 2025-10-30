@@ -9,6 +9,7 @@ The idea is that working with deeply nested folders containing the entire source
 1. Install the Roblox Studio plugin
 2. Download the latest server binary or build it from source
 3. Start the server from a terminal in the current directory you want to use as a workspace
+4. Click the "connect" button on the plugin menu
 
 ### The workflow
 1. Export files from the plugin
