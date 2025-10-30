@@ -1,4 +1,9 @@
+--!strict
 type Instance = any
+local Instance: any = {}
+local game:any = {}
+local Enum:any = {}
+local warn:any = {}
 
 local HttpService = game:GetService("HttpService")
 
@@ -76,7 +81,7 @@ end
 
 -- returns the path from the first cached ancestor to the given instance
 -- caches paths to yet uncached instances
-local function addFolderPath(instance)
+local function addFolderPath(instance: Instance?)
 	if instance == nil then
 		error("instance is not a child of a root")
 	elseif instanceToFolderPath[instance] then
@@ -110,26 +115,6 @@ local function addFilePath(instance)
 	return path
 end
 
-
-
--- unchecked ChatGPT:
-local function http_ok(method: string, url: string, body: string?, contentType: string?)
-	local ok, res = pcall(function()
-		if method == "POST" then
-			return HttpService:PostAsync(url, body or "", Enum.HttpContentType[contentType or "ApplicationJson"])
-		elseif method == "GET" then
-			return HttpService:GetAsync(url)
-		else
-			error("unsupported method")
-		end
-	end)
-	if not ok then
-		warn("[Sidecar] HTTP error:", res)
-		return false, nil
-	end
-	return true, res
-end
-
 local function deconstructFilePath(receivedFilePath: string)
 	local filePath = receivedFilePath:gsub("\\", "/")
 	local parts = {}
@@ -140,7 +125,7 @@ local function deconstructFilePath(receivedFilePath: string)
 		error("empty file path")
 	end
 
-	local file = table.remove(parts)
+	local file = table.remove(parts)::string
 
 	local name, type = string.match(file, "(.-)%.(.-)%.luau?")
 	if not type then
@@ -173,7 +158,7 @@ end
 -- else return nil, nil
 
 -- I don't like the name
-local function getDeepestCachedInstance(pathData)
+local function getDeepestCachedInstance(pathData): (Instance?, number?)
 	local cached = filePathToInstance[pathData.path]
 	if cached then
 		return cached, -1
@@ -196,7 +181,7 @@ end
 -- or the instances are not cached
 -- so we want to find/create the instances
 -- and we want to add them to the cache
-local function guaranteeFilePathInstances(pathData, instance, pathRemainder)
+local function guaranteeFilePathInstances(pathData, instance, pathRemainder): Instance?
 	if pathRemainder == -1 then
 		return instance
 	end
@@ -204,7 +189,7 @@ local function guaranteeFilePathInstances(pathData, instance, pathRemainder)
 	local parts = pathData.parts
 	local pathIndex0 = #parts - pathRemainder
 
-	local currentInstance = instance
+	local currentInstance = instance::Instance
 	for i = pathIndex0 + 1, #parts do
 		local part = parts[i]
 		local foundChild = nil
@@ -239,15 +224,16 @@ local function guaranteeFilePathInstances(pathData, instance, pathRemainder)
 		foundCount += 1
 	end
 
-	local fileInstance
+	local fileInstance: Instance
 	if foundCount == 0 then
 		if pathData.type == "module" then
 			fileInstance = Instance.new("ModuleScript", currentInstance)
 		elseif pathData.type == "server" then
 			fileInstance = Instance.new("Script", currentInstance)
 		elseif pathData.type == "client" then
-			fileInstance = Instance.new("Script", currentInstance)
-			fileInstance.RunContext = Enum.RunContext.Client
+			local scriptInstance = Instance.new("Script", currentInstance)
+			scriptInstance.RunContext = Enum.RunContext.Client
+			fileInstance = scriptInstance
 		end
 		isServerCreated[fileInstance] = true
 	elseif foundCount == 1 then
@@ -327,13 +313,22 @@ end
 
 local function updateScript(receivedBody)
 	local receivedFilePath, source = string.match(receivedBody, "(.-)\n(.*)")
+	if not source then
+		warn(`[Sidecar] receivedBody contains no source`)
+		return
+	end
+	if not receivedFilePath then
+		warn(`[Sidecar] receivedBody contains no filePath`)
+		return
+	end
+
 	local pathData = deconstructFilePath(receivedFilePath)
 
 	local instance, pathRemainder = getDeepestCachedInstance(pathData)
 
 	local fileInstance
-	if instance then
-		fileInstance = guaranteeFilePathInstances(pathData, instance, pathRemainder)
+	if instance and pathRemainder then
+		fileInstance = guaranteeFilePathInstances(pathData, instance, pathRemainder)::any
 	else
 		fileInstance = synchronizeInstancesWithPath(pathData)
 	end
@@ -362,7 +357,7 @@ local function deleteFile(receivedFilePath)
 			instanceToFolderPath[folderInstance] = nil
 			folderPathToInstance[folderPath] = nil
 		end
-		folderInstance = folderInstance.Parent
+		folderInstance = (folderInstance::any).Parent
 	end
 end
 
@@ -384,6 +379,7 @@ local function exportSelected()
 	local roots = deduplicateRoots(game.Selection:Get())
 	if not roots then
 		warn("[Sidecar] Roots are not uniquely named.")
+		return
 	elseif #roots == 0 then
 		warn("[Sidecar] No roots selected.")
 		return
@@ -405,20 +401,32 @@ local function exportSelected()
 			local path = addFilePath(instance)
 			local src = (instance :: any).Source
 			-- Body format: "<path>\n<source>"
-			local payload = `{path}\n{src}`
-			local ok = http_ok("POST", SIDECAR_HOST .. "/write_file", payload, "TextPlain")
-			if ok then
+			--local payload = `{path}\n{src}`
+			--local ok = http_ok("POST", SIDECAR_HOST .. "/write_file", payload, "TextPlain")
+			local success, message = pcall(HttpService.PostAsync, HttpService,
+				"127.0.0.1:8080/write_file",
+				`{path}\n{src}`)
+			if success then
 				exported += 1
+			else
+				warn(`[Sidecar] Could not export {path}, got error {message}`)
 			end
 		end
 	end
 
-	print(("[Sidecar] Export complete. Files: %d"):format(exported))
+	print(`[Sidecar] Export complete. Files: {exported}`)
 end
 
 -- implementation: clear
 local function clearSidecar()
-	http_ok("POST", SIDECAR_HOST .. "/clear", "", "ApplicationJson")
+	--http_ok("POST", SIDECAR_HOST .. "/clear", "", "ApplicationJson")
+
+	local success, message = pcall(HttpService.PostAsync, HttpService,
+		"127.0.0.1:8080/clear", "")
+	if not success then
+		warn(`[Sidecar] Could not clear, got error {message}`)
+		return
+	end
 	-- Clear caches since the filesystem view is now empty
 	table.clear(instanceToFilePath)
 	table.clear(filePathToInstance)
