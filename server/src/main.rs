@@ -1,13 +1,13 @@
 use futures_util::SinkExt;
+use futures_util::StreamExt;
 use notify::Watcher;
 use notify::event::CreateKind;
 use notify::event::ModifyKind;
 use notify::event::RemoveKind;
-use tokio_tungstenite::accept_async;
 use std::env::current_dir;
-use tokio::net::TcpListener;
 use std::path::Path;
-use futures_util::StreamExt;
+use tokio::net::TcpListener;
+use tokio_tungstenite::accept_async;
 
 #[expect(unused)]
 #[derive(Debug)]
@@ -36,7 +36,9 @@ async fn write_file(base_dir: &Path, body: &[u8]) -> Result<(), Error> {
 	dir_path.pop();
 
 	// guaranteeFolderPath(path)
-	tokio::fs::create_dir_all(dir_path).await.map_err(Error::IO)?;
+	tokio::fs::create_dir_all(dir_path)
+		.await
+		.map_err(Error::IO)?;
 	// create the file
 	tokio::fs::write(file_path, code).await.map_err(Error::IO)?;
 
@@ -49,9 +51,12 @@ async fn run_server(base_dir: &Path) {
 	let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 	let mut watcher = notify::recommended_watcher(move |result| {
 		sender.send(result).unwrap();
-	}).unwrap();
+	})
+	.unwrap();
 
-	watcher.watch(base_dir, notify::RecursiveMode::Recursive).unwrap();
+	watcher
+		.watch(base_dir, notify::RecursiveMode::Recursive)
+		.unwrap();
 
 	while let Ok((stream, addr)) = listener.accept().await {
 		println!("connecting to addr {addr:?}");
@@ -99,7 +104,7 @@ async fn run_server(base_dir: &Path) {
 				}
 			}
 		}
-    };
+	}
 }
 
 #[tokio::main]
@@ -142,9 +147,11 @@ mod test {
 		// let the server start up (todo: gracefully detect startup completion)
 		tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-		let client = spawn(async move{
+		let client = spawn(async move {
 			// connect to server
-			let (mut connection, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:8080").await.unwrap();
+			let (mut connection, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:8080")
+				.await
+				.unwrap();
 
 			macro_rules! drop_junk {
 				() => {
